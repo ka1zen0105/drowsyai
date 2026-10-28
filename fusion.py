@@ -55,6 +55,8 @@ class SharedState:
         self.ear_avg: float = 0.30
         self.mar: float     = 0.0
         self.pitch: float   = 0.0
+        self.roll: float    = 0.0
+        self.yaw: float     = 0.0
         self.perclos: float = 0.0
         self.eye_closure_duration: float = 0.0
 
@@ -140,8 +142,15 @@ class FusionEngine:
         now = rec.timestamp
 
         if not rec.face_found:
-            # Do NOT reset timers — absence of face is NOT evidence of
-            # an awake driver.  The watchdog handles this separately.
+            # If eyes were closing or head was tilting forward right before face was lost,
+            # continue advancing the timers (e.g. driver slumped head down in sleep).
+            if self._eye_closure_start is not None:
+                self.eye_closure_duration = now - self._eye_closure_start
+                self.eye_flag = self.eye_closure_duration >= self.det.ear_closure_duration_sec
+                self.microsleep = self.eye_closure_duration >= self.det.microsleep_duration_sec
+            if self._nod_start is not None:
+                nod_dur = now - self._nod_start
+                self.head_flag = nod_dur >= self.det.nod_duration_sec
             return self._evaluate_alarm(now)
 
         # ── Eye closure ──────────────────────────────────────────────
@@ -172,9 +181,21 @@ class FusionEngine:
             yawn_dur = 0.0
         self.yawn_flag = yawn_dur >= self.det.yawn_duration_sec
 
-        # ── Head nod ─────────────────────────────────────────────────
+        # ── Head nod / sideways tilt / turn ──────────────────────────
         pitch_dev = self.cal.pitch_baseline - rec.pitch_deg  # positive when head dips forward
-        is_nodding = pitch_dev >= self.det.pitch_deviation_deg
+        roll_baseline = getattr(self.cal, "roll_baseline", 0.0)
+        roll_dev = abs(rec.roll_deg - roll_baseline)         # sideways tilt (left or right shoulder)
+        yaw_baseline = getattr(self.cal, "yaw_baseline", 0.0)
+        yaw_dev = abs(rec.yaw_deg - yaw_baseline)           # turned away from road
+
+        roll_thresh = getattr(self.det, "roll_deviation_deg", 14.0)
+        yaw_thresh = getattr(self.det, "yaw_deviation_deg", 25.0)
+
+        is_nodding = (
+            (pitch_dev >= self.det.pitch_deviation_deg) or
+            (roll_dev >= roll_thresh) or
+            (yaw_dev >= yaw_thresh)
+        )
         if is_nodding:
             if self._nod_start is None:
                 self._nod_start = now

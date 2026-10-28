@@ -50,9 +50,11 @@ class DetectionConfig:
     # MAR
     mar_threshold_offset: float = 0.15
     yawn_duration_sec: float = 1.5
-    # Head pitch
-    pitch_deviation_deg: float = 15.0
-    nod_duration_sec: float = 1.0
+    # Head pose & tilt
+    pitch_deviation_deg: float = 10.0
+    nod_duration_sec: float = 0.8
+    roll_deviation_deg: float = 12.0
+    yaw_deviation_deg: float = 35.0
 
 
 @dataclass
@@ -107,6 +109,8 @@ class CalibrationValues:
     mar_resting_baseline: float = 0.18
     mar_yawn_threshold: float = 0.33
     pitch_baseline: float = 0.0
+    roll_baseline: float = 0.0
+    yaw_baseline: float = 0.0
     perclos_baseline: float = 0.02
     perclos_threshold: float = 0.15
 
@@ -206,6 +210,8 @@ def save_calibration(cal: CalibrationValues, path: Union[str, Path]) -> None:
         "mar_resting_baseline": round(float(cal.mar_resting_baseline), 4),
         "mar_yawn_threshold": round(float(cal.mar_yawn_threshold), 4),
         "pitch_baseline": round(float(cal.pitch_baseline), 2),
+        "roll_baseline": round(float(getattr(cal, "roll_baseline", 0.0)), 2),
+        "yaw_baseline": round(float(getattr(cal, "yaw_baseline", 0.0)), 2),
         "perclos_baseline": round(float(cal.perclos_baseline), 4),
         "perclos_threshold": round(float(cal.perclos_threshold), 4),
     }

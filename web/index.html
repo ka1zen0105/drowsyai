@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Driver monitor</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body data-state="offline">
+
+  <main class="layout">
+
+    <!-- Status hero: colour follows system state -->
+    <section class="panel hero" id="hero">
+      <div>
+        <h1>Driver monitor</h1>
+        <div class="state-name" id="stateLabel" role="status" aria-live="polite">Connecting</div>
+      </div>
+      <div class="hero-metric">
+        <div class="big"><span id="perclosVal">–</span><small>%</small></div>
+        <div class="rail scale"><i class="fill eye" id="perclosFill"></i></div>
+        <p class="cap">Eyes closed over the last 30 s</p>
+      </div>
+    </section>
+
+    <!-- Live video -->
+    <section class="panel video-panel">
+      <div class="stage" id="stage">
+        <img id="video" alt="Live driver camera" src="/video_feed">
+        <canvas id="simCanvas" width="640" height="400" style="position:absolute;inset:0;width:100%;height:100%;display:none;pointer-events:none;"></canvas>
+
+        <div class="banner" id="banner" role="alert" hidden>
+          <i class="b-ico"><svg viewBox="0 0 24 24"><path d="M12 4l9 16H3L12 4z"/><path d="M12 10v4M12 17h.01"/></svg></i>
+          <div class="banner-in"><b>Drowsiness alert</b><span id="bannerReason"></span></div>
+        </div>
+
+        <div class="overlay" id="ovInfo" hidden>
+          <div class="ov-card">
+            <p class="ov-title" id="ovInfoTitle"></p>
+            <p class="ov-text" id="ovInfoText"></p>
+          </div>
+        </div>
+
+        <div class="overlay" id="ovCal" hidden>
+          <div class="ov-card">
+            <p class="ov-title">Calibrating</p>
+            <p class="ov-text">Look at the road with your eyes open and sit as you normally drive.</p>
+            <p class="count"><span id="calCount">15</span><small>s</small></p>
+            <div class="progress"><i id="calBar"></i></div>
+            <div class="cal-meta"><span id="calSamples">0 samples</span><span id="calEar"></span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Mode, flags, hardware -->
+    <section class="panel status">
+      <h2 class="card-title">Status</h2>
+
+      <div class="modes" aria-hidden="true">
+        <span class="mode" data-m="ok">Monitor</span>
+        <span class="mode" data-m="alarm">Alarm</span>
+        <span class="mode" data-m="cal">Calibrate</span>
+        <span class="mode" data-m="fault">Fault</span>
+      </div>
+
+      <div>
+        <div class="chips" aria-label="Detection flags">
+          <span class="chip" id="chipEye">Eyes closing</span>
+          <span class="chip" id="chipYawn">Yawning</span>
+          <span class="chip" id="chipHead">Head off position</span>
+          <span class="chip danger" id="chipMicro">Microsleep</span>
+        </div>
+        <p class="votes" id="votes">0 of 3 flags</p>
+      </div>
+
+      <div class="hw" aria-label="Hardware outputs">
+        <span class="hw-item"><i class="led green" id="ledGreen"></i>Green LED</span>
+        <span class="hw-item"><i class="led red" id="ledRed"></i>Red LED</span>
+        <span class="hw-item"><span class="buzzer" id="buzzer"><i></i><i></i><i></i><i></i></span>Buzzer</span>
+      </div>
+    </section>
+
+    <!-- Gauges -->
+    <section class="panel instruments" id="instruments">
+      <h2 class="card-title">Live readings</h2>
+
+      <div class="row">
+        <div class="row-head"><span class="name">Eye openness</span><span class="val"><span id="earVal">–</span></span></div>
+        <div class="rail scale"><i class="fill eye" id="earFill"></i><i class="tick" id="earBase"></i></div>
+        <div class="row-sub" id="earSub">Baseline –</div>
+      </div>
+
+      <div class="row">
+        <div class="row-head"><span class="name">Mouth opening</span><span class="val"><span id="marVal">–</span></span></div>
+        <div class="rail scale"><i class="fill mouth" id="marFill"></i><i class="tick" id="marBase"></i><i class="tick thr" id="marThr"></i></div>
+        <div class="row-sub" id="marSub">Baseline –</div>
+      </div>
+
+      <div class="row">
+        <div class="row-head"><span class="name">Head nod</span><span class="val"><span id="pitchVal">–</span><small>°</small></span></div>
+        <div class="rail dev"><i class="zone l"></i><i class="zone r"></i><i class="mid"></i><i class="marker" id="pitchMark"></i></div>
+        <div class="row-sub" id="pitchSub"></div>
+      </div>
+
+      <div class="row">
+        <div class="row-head"><span class="name">Side tilt</span><span class="val"><span id="rollVal">–</span><small>°</small></span></div>
+        <div class="rail dev"><i class="zone l"></i><i class="zone r"></i><i class="mid"></i><i class="marker" id="rollMark"></i></div>
+        <div class="row-sub" id="rollSub"></div>
+      </div>
+
+      <div class="row">
+        <div class="row-head"><span class="name">Head turn</span><span class="val"><span id="yawVal">–</span><small>°</small></span></div>
+        <div class="rail dev"><i class="zone l"></i><i class="zone r"></i><i class="mid"></i><i class="marker" id="yawMark"></i></div>
+        <div class="row-sub" id="yawSub"></div>
+      </div>
+    </section>
+
+    <!-- Traces -->
+    <section class="panel traces" id="traces">
+      <h2 class="card-title">Last 30 seconds</h2>
+      <div class="lane">
+        <div class="lane-label"><i class="key eye"></i>Eye openness <b id="earLaneVal">–</b></div>
+        <canvas id="earCanvas"></canvas>
+      </div>
+      <div class="lane">
+        <div class="lane-label"><i class="key mouth"></i>Mouth opening <b id="marLaneVal">–</b></div>
+        <canvas id="marCanvas"></canvas>
+      </div>
+      <div class="axis"><span>30 s ago</span><span>Now</span></div>
+    </section>
+
+    <!-- Events -->
+    <section class="panel events">
+      <div class="panel-head">
+        <h2 class="card-title">Events <span class="count-note" id="evCount"></span></h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <colgroup>
+            <col style="width:88px"><col><col style="width:64px"><col style="width:64px"><col style="width:72px"><col style="width:84px">
+          </colgroup>
+          <thead>
+            <tr><th>Time</th><th>Event</th><th class="n">EAR</th><th class="n">MAR</th><th class="n">Pitch</th><th class="n">PERCLOS</th></tr>
+          </thead>
+          <tbody id="evBody"></tbody>
+        </table>
+        <p class="empty" id="evEmpty">No events yet. Alarms, faults and acknowledgements will appear here.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Action dock -->
+  <nav class="dock" aria-label="Actions">
+    <button class="dock-btn" id="calBtn" type="button" title="Calibrate to your normal driving position">
+      <i class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></i>
+      <span id="calLabel">Calibrate</span>
+    </button>
+    <button class="dock-btn" id="ackBtn" type="button" title="Acknowledge alarm (Space)">
+      <i class="ico"><svg viewBox="0 0 24 24"><path d="M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15L6 16z"/><path d="M10 21h4"/></svg></i>
+      <span>Acknowledge</span>
+    </button>
+    <a class="dock-btn" href="/api/logs/events.csv" download title="Download the event log as CSV">
+      <i class="ico"><svg viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 20h14"/></svg></i>
+      <span>Download log</span>
+    </a>
+  </nav>
+
+  <div class="toast" id="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

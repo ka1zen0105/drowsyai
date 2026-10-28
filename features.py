@@ -122,13 +122,15 @@ def compute_mar(landmarks_px: np.ndarray) -> float:
     """
     try:
         if len(landmarks_px) < 100:
-            # 68-point model: mouth corners 48, 54; vertical pairs (50,58), (51,57), (52,56)
-            d_h = _dist(landmarks_px[48], landmarks_px[54])
+            # 68-point model inner lips: corners 60, 64; vertical pairs (61,67), (62,66), (63,65)
+            d_h = _dist(landmarks_px[60], landmarks_px[64])
+            if d_h < 1e-6:
+                d_h = _dist(landmarks_px[48], landmarks_px[54])
             if d_h < 1e-6:
                 return 0.0
-            d1 = _dist(landmarks_px[50], landmarks_px[58])
-            d2 = _dist(landmarks_px[51], landmarks_px[57])
-            d3 = _dist(landmarks_px[52], landmarks_px[56])
+            d1 = _dist(landmarks_px[61], landmarks_px[67])
+            d2 = _dist(landmarks_px[62], landmarks_px[66])
+            d3 = _dist(landmarks_px[63], landmarks_px[65])
             return (d1 + d2 + d3) / (2.0 * d_h)
         else:
             d_h = _dist(landmarks_px[LIP_LEFT], landmarks_px[LIP_RIGHT])
@@ -182,6 +184,29 @@ def estimate_head_pose(
     rmat, _ = cv2.Rodrigues(rvec)
     angles, *_ = cv2.RQDecomp3x3(rmat)
     pitch = float(angles[0])
-    yaw   = float(angles[1])
-    roll  = float(angles[2])
+    # Normalize pitch into [-90, 90] range to remove coordinate system 180° ambiguity
+    if pitch > 90.0:
+        pitch -= 180.0
+    elif pitch < -90.0:
+        pitch += 180.0
+
+    # Direct physical roll (left / right shoulder tilt) from eye alignment
+    left_eye_pt = landmarks_px[36] if len(landmarks_px) < 100 else landmarks_px[33]
+    right_eye_pt = landmarks_px[45] if len(landmarks_px) < 100 else landmarks_px[263]
+    dx = float(right_eye_pt[0] - left_eye_pt[0])
+    dy = float(right_eye_pt[1] - left_eye_pt[1])
+    roll = float(np.degrees(np.arctan2(dy, dx))) if (dx**2 + dy**2) > 1.0 else 0.0
+
+    # Direct yaw (head turn left / right) from horizontal nose offset relative to eye span
+    nose_pt = landmarks_px[30] if len(landmarks_px) < 100 else landmarks_px[1]
+    eye_dist = np.hypot(dx, dy)
+    if eye_dist > 1.0:
+        u = np.array([dx, dy], dtype=np.float64) / eye_dist
+        d_l = float(np.dot(nose_pt[:2] - left_eye_pt[:2], u))
+        d_r = float(np.dot(right_eye_pt[:2] - nose_pt[:2], u))
+        denom = d_l + d_r
+        yaw = float(((d_l - d_r) / denom) * 75.0) if denom > 1.0 else 0.0
+    else:
+        yaw = 0.0
+
     return pitch, yaw, roll, rvec, tvec

@@ -137,6 +137,24 @@ class TestMAR:
         mar = compute_mar(lm)
         assert 0.13 < mar < 0.50
 
+    def test_68_closed_and_yawn_mouth(self):
+        """68-point model: closed mouth < 0.20, yawn > 0.50."""
+        lm = np.zeros((68, 2), dtype=np.float32)
+        lm[60] = [275, 300]
+        lm[64] = [365, 300]
+        lm[61], lm[67] = [300, 298], [300, 302]
+        lm[62], lm[66] = [320, 298], [320, 302]
+        lm[63], lm[65] = [340, 298], [340, 302]
+        mar_closed = compute_mar(lm)
+        assert mar_closed < 0.20
+
+        # Yawn
+        lm[61], lm[67] = [300, 280], [300, 335]
+        lm[62], lm[66] = [320, 275], [320, 345]
+        lm[63], lm[65] = [340, 280], [340, 335]
+        mar_yawn = compute_mar(lm)
+        assert mar_yawn > 0.50
+
 
 # ---------------------------------------------------------------------------
 # Head-pose tests
@@ -157,8 +175,9 @@ class TestHeadPose:
 
         pitch, yaw, roll, rvec, tvec = estimate_head_pose(lm, (480, 640))
         assert rvec is not None
-        assert abs(yaw)  < 15.0, f"Yaw too large for frontal face: {yaw}"
-        assert abs(roll) < 15.0, f"Roll too large for frontal face: {roll}"
+        assert abs(pitch) < 15.0, f"Pitch too large for frontal face: {pitch}"
+        assert abs(yaw)   < 15.0, f"Yaw too large for frontal face: {yaw}"
+        assert abs(roll)  < 15.0, f"Roll too large for frontal face: {roll}"
 
     def test_pose_returns_none_on_failure(self):
         """Degenerate landmark set → solvePnP may fail gracefully."""

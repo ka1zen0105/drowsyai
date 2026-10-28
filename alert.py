@@ -104,15 +104,15 @@ class MockAlertController(AlertController):
         return self._buzzer
 
     def self_test(self) -> None:
-        print("[MockGPIO] Self-test: Green ON …")
+        print("[MockGPIO] Self-test: Green ON ...")
         self._green = True
         time.sleep(0.3)
         self._green = False
-        print("[MockGPIO] Self-test: Red ON …")
+        print("[MockGPIO] Self-test: Red ON ...")
         self._red = True
         time.sleep(0.3)
         self._red = False
-        print("[MockGPIO] Self-test: Buzzer beep …")
+        print("[MockGPIO] Self-test: Buzzer beep ...")
         self._buzzer = True
         time.sleep(0.15)
         self._buzzer = False
@@ -171,7 +171,7 @@ class MockAlertController(AlertController):
         self._ack_cb = cb
 
     def simulate_ack(self) -> None:
-        print("[MockGPIO] ▶ Acknowledge button pressed (simulated).")
+        print("[MockGPIO] > Acknowledge button pressed (simulated).")
         if self._ack_cb:
             self._ack_cb()
 

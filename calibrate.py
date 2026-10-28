@@ -16,7 +16,10 @@ import numpy as np
 from config import (
     AppConfig, CalibrationValues, load_config, save_calibration,
 )
-from vision import CameraReader, FaceMeshDetector, FaceMeshDetector as _FM, process_frame
+from vision import (
+    CameraReader, FaceMeshDetector, FaceMeshDetector as _FM,
+    process_frame, draw_face_landmarks,
+)
 
 
 def run_calibration(
@@ -56,6 +59,8 @@ def run_calibration(
     ear_samples: List[float] = []
     mar_samples: List[float] = []
     pitch_samples: List[float] = []
+    roll_samples: List[float] = []
+    yaw_samples: List[float] = []
     blink_times: List[float] = []  # timestamps of detected blinks for PERCLOS
 
     duration = cfg.calibration_cfg.duration_sec
@@ -93,6 +98,8 @@ def run_calibration(
             ear_samples.append(rec.ear_avg)
             mar_samples.append(rec.mar)
             pitch_samples.append(rec.pitch_deg)
+            roll_samples.append(rec.roll_deg)
+            yaw_samples.append(rec.yaw_deg)
 
             # Rough blink tracking for PERCLOS baseline
             # Use a generous threshold (0.20) for blink detection during calibration
@@ -109,14 +116,42 @@ def run_calibration(
                   f"samples={len(ear_samples)}", end="\r")
 
         if show_gui and has_cv2:
-            txt = f"CALIBRATING: {elapsed:.0f}/{duration:.0f}s"
-            cv2.putText(frame, txt, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8, (0, 255, 255), 2)
+            # Draw facial landmark dots
+            if detector and getattr(detector, "last_landmarks_px", None) is not None:
+                draw_face_landmarks(frame, detector.last_landmarks_px)
+
+            # Draw subject lock-on box
+            if detector and detector.last_bbox is not None:
+                bx, by, bw, bh = detector.last_bbox
+                cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 255, 255), 2)
+                cv2.putText(frame, "LOCKING ONTO SUBJECT...", (bx, max(18, by - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+            # Top calibration banner & progress bar
+            h_f, w_f = frame.shape[:2]
+            cv2.rectangle(frame, (0, 0), (w_f, 42), (30, 30, 30), -1)
+            pct = min(100.0, (elapsed / max(1.0, duration)) * 100.0)
+            txt = f"CALIBRATING: {elapsed:.0f}/{duration:.0f}s ({pct:.0f}%)"
+            cv2.putText(frame, txt, (10, 24), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.70, (0, 255, 255), 2)
+
+            bar_w = int((w_f - 20) * (elapsed / max(1.0, duration)))
+            cv2.rectangle(frame, (10, 32), (10 + bar_w, 38), (0, 255, 120), -1)
+
             if rec.face_found:
-                cv2.putText(frame, f"EAR={rec.ear_avg:.3f}  MAR={rec.mar:.3f}  "
-                            f"Pitch={rec.pitch_deg:.1f}",
-                            (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                            (200, 200, 200), 1)
+                cur_ear = np.mean(ear_samples) if ear_samples else rec.ear_avg
+                cv2.putText(frame, f"EAR={rec.ear_avg:.3f} (avg={cur_ear:.3f})  MAR={rec.mar:.3f}  "
+                            f"Pitch={rec.pitch_deg:.1f}  Tilt={rec.roll_deg:.1f}",
+                            (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.44,
+                            (200, 255, 200), 1)
+                cv2.putText(frame, f"Samples: {len(ear_samples)} | Look ahead naturally",
+                            (10, 82), cv2.FONT_HERSHEY_SIMPLEX, 0.40,
+                            (180, 220, 255), 1)
+            else:
+                cv2.putText(frame, "NO FACE DETECTED - Please face the camera",
+                            (10, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                            (0, 0, 255), 1)
+
             cv2.imshow("Calibration", frame)
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord('q')):
@@ -124,6 +159,10 @@ def run_calibration(
                 break
 
     print()  # newline after \r progress
+
+    if detector:
+        detector.lock_subject()
+        print("[Calibrate] Subject lock-on established.")
 
     if show_gui and has_cv2:
         cv2.destroyWindow("Calibration")
@@ -141,6 +180,8 @@ def run_calibration(
     ear_baseline = statistics.median(ear_samples)
     mar_baseline = statistics.median(mar_samples)
     pitch_baseline = statistics.median(pitch_samples)
+    roll_baseline = statistics.median(roll_samples) if roll_samples else 0.0
+    yaw_baseline = statistics.median(yaw_samples) if yaw_samples else 0.0
 
     # PERCLOS baseline: fraction of calibration time spent blinking
     total_time = duration
@@ -162,6 +203,8 @@ def run_calibration(
         mar_resting_baseline=mar_baseline,
         mar_yawn_threshold=mar_yawn_threshold,
         pitch_baseline=pitch_baseline,
+        roll_baseline=roll_baseline,
+        yaw_baseline=yaw_baseline,
         perclos_baseline=perclos_baseline,
         perclos_threshold=perclos_threshold,
     )
@@ -174,6 +217,8 @@ def run_calibration(
     print(f"  MAR resting baseline:   {cal.mar_resting_baseline:.4f}")
     print(f"  MAR yawn threshold:     {cal.mar_yawn_threshold:.4f}")
     print(f"  Pitch baseline:         {cal.pitch_baseline:.2f}°")
+    print(f"  Tilt (Roll) baseline:   {cal.roll_baseline:.2f}°")
+    print(f"  Turn (Yaw) baseline:    {cal.yaw_baseline:.2f}°")
     print(f"  PERCLOS baseline:       {cal.perclos_baseline:.4f}")
     print(f"  PERCLOS threshold:      {cal.perclos_threshold:.4f}")
     print(f"{'─'*60}\n")

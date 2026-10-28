@@ -13,7 +13,7 @@ import threading
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -68,7 +68,26 @@ class FaceMeshDetector:
         self._mp = None
         self._face_cascade = None
         self._facemark = None
+        self._tracked_bbox: Optional[Tuple[int, int, int, int]] = None
+        self.last_bbox: Optional[Tuple[int, int, int, int]] = None
+        self.last_landmarks_px: Optional[np.ndarray] = None
+        self._frames_since_seen: int = 0
         self._init()
+
+    def lock_subject(self, bbox: Optional[Tuple[int, int, int, int]] = None) -> None:
+        """Lock onto a specific subject's face bounding box."""
+        if bbox is not None:
+            self._tracked_bbox = (int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3]))
+            self.last_bbox = self._tracked_bbox
+        elif self.last_bbox is not None:
+            self._tracked_bbox = self.last_bbox
+
+    def reset_subject_lock(self) -> None:
+        """Clear the current locked subject to allow re-acquiring."""
+        self._tracked_bbox = None
+        self.last_bbox = None
+        self.last_landmarks_px = None
+        self._frames_since_seen = 0
 
     # ---- initialisation ---------------------------------------------------
 
@@ -222,15 +241,96 @@ class FaceMeshDetector:
             faces = self._face_cascade.detectMultiScale(
                 gray, scaleFactor=1.15, minNeighbors=4, minSize=(60, 60)
             )
+            if len(faces) == 0 and self._tracked_bbox is not None:
+                # Tilt recovery pass 1: search around tracked subject with relaxed parameters
+                tx, ty, tw, th = self._tracked_bbox
+                pad_x, pad_y = int(tw * 0.35), int(th * 0.35)
+                h_img, w_img = gray.shape[:2]
+                rx1 = max(0, tx - pad_x)
+                ry1 = max(0, ty - pad_y)
+                rx2 = min(w_img, tx + tw + pad_x)
+                ry2 = min(h_img, ty + th + pad_y)
+                roi = gray[ry1:ry2, rx1:rx2]
+
+                roi_faces = self._face_cascade.detectMultiScale(
+                    roi, scaleFactor=1.08, minNeighbors=1, minSize=(int(tw * 0.6), int(th * 0.6))
+                )
+                if len(roi_faces) > 0:
+                    faces = np.array([[fx + rx1, fy + ry1, fw, fh] for (fx, fy, fw, fh) in roi_faces])
+                else:
+                    # Tilt recovery pass 2: rotated ROI (±18°) for steep left/right head tilt
+                    roi_h, roi_w = roi.shape[:2]
+                    roi_center = (roi_w / 2.0, roi_h / 2.0)
+                    for angle in (-18.0, 18.0):
+                        rot_mat = cv2.getRotationMatrix2D(roi_center, angle, 1.0)
+                        rot_roi = cv2.warpAffine(roi, rot_mat, (roi_w, roi_h))
+                        rot_faces = self._face_cascade.detectMultiScale(
+                            rot_roi, scaleFactor=1.10, minNeighbors=2, minSize=(int(tw * 0.6), int(th * 0.6))
+                        )
+                        if len(rot_faces) > 0:
+                            fx, fy, fw, fh = rot_faces[0]
+                            fcx, fcy = fx + fw / 2.0, fy + fh / 2.0
+                            inv_mat = cv2.getRotationMatrix2D(roi_center, -angle, 1.0)
+                            orig_pt = inv_mat @ np.array([fcx, fcy, 1.0])
+                            orig_x = int(orig_pt[0] - fw / 2.0 + rx1)
+                            orig_y = int(orig_pt[1] - fh / 2.0 + ry1)
+                            faces = np.array([[max(0, orig_x), max(0, orig_y), fw, fh]])
+                            break
+
+
             if len(faces) == 0:
+                self._frames_since_seen += 1
+                if self._frames_since_seen > 30:
+                    self._tracked_bbox = None
+                    self.last_bbox = None
+                    self.last_landmarks_px = None
                 return None
-            faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[:1]
-            ok, landmarks = self._facemark.fit(gray, np.array(faces))
+
+            self._frames_since_seen = 0
+
+            # Single-subject lock-on logic
+            if self._tracked_bbox is not None and len(faces) > 1:
+                tx, ty, tw, th = self._tracked_bbox
+                tcx, tcy = tx + tw / 2.0, ty + th / 2.0
+                def score_face(f):
+                    fx, fy, fw, fh = f
+                    fcx, fcy = fx + fw / 2.0, fy + fh / 2.0
+                    center_dist = np.hypot(fcx - tcx, fcy - tcy)
+                    area_diff = abs((fw * fh) - (tw * th)) / max(1.0, float(tw * th))
+                    return center_dist + area_diff * 40.0
+                chosen = min(faces, key=score_face)
+            else:
+                # Driver face: prefer prominent central face
+                h_img, w_img = bgr_frame.shape[:2]
+                def initial_driver_score(f):
+                    fx, fy, fw, fh = f
+                    fcx = fx + fw / 2.0
+                    area = fw * fh
+                    center_dist = abs(fcx - w_img / 2.0)
+                    return area - center_dist * 40.0
+                chosen = max(faces, key=initial_driver_score)
+
+            # Smooth tracked bbox (alpha=0.7)
+            bx, by, bw, bh = chosen
+            if self._tracked_bbox is None:
+                self._tracked_bbox = (int(bx), int(by), int(bw), int(bh))
+            else:
+                ox, oy, ow, oh = self._tracked_bbox
+                self._tracked_bbox = (
+                    int(0.70 * bx + 0.30 * ox),
+                    int(0.70 * by + 0.30 * oy),
+                    int(0.70 * bw + 0.30 * ow),
+                    int(0.70 * bh + 0.30 * oh),
+                )
+            self.last_bbox = self._tracked_bbox
+
+            ok, landmarks = self._facemark.fit(gray, np.array([chosen]))
             if not ok or len(landmarks) == 0:
                 return None
             pts = landmarks[0].reshape(-1, 2)
             if len(pts) < 68:
                 return None
+            self.last_landmarks_px = pts
             h, w = bgr_frame.shape[:2]
             norm = np.zeros((len(pts), 3), dtype=np.float32)
             norm[:, 0] = pts[:, 0] / w
@@ -265,8 +365,14 @@ class CameraReader:
     Decouples camera I/O latency from the rest of the vision pipeline.
     """
 
-    def __init__(self, source: Union[int, str] = 0,
+    def __init__(self, source: Union[int, str, Any] = 0,
                  width: int = 640, height: int = 480, fps: int = 30):
+        if hasattr(source, "source"):
+            width = getattr(source, "width", width)
+            height = getattr(source, "height", height)
+            fps = getattr(source, "fps", fps)
+            source = source.source
+
         self.source = int(source) if isinstance(source, str) and source.isdigit() else source
         self.width = width
         self.height = height
@@ -296,11 +402,26 @@ class CameraReader:
             candidates = [self.source]
 
         for cand in candidates:
-            cap = cv2.VideoCapture(cand, backend)
-            if not cap.isOpened() and backend != cv2.CAP_ANY:
-                cap = cv2.VideoCapture(cand, cv2.CAP_ANY)
-            if not cap.isOpened():
-                cap.release()
+            cap = None
+            if isinstance(cand, int):
+                try:
+                    cap = cv2.VideoCapture(int(cand), backend)
+                except Exception:
+                    cap = None
+                if cap is None or not cap.isOpened():
+                    try:
+                        cap = cv2.VideoCapture(int(cand))
+                    except Exception:
+                        cap = None
+            else:
+                try:
+                    cap = cv2.VideoCapture(str(cand))
+                except Exception:
+                    cap = None
+
+            if cap is None or not cap.isOpened():
+                if cap is not None:
+                    cap.release()
                 continue
 
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
@@ -368,6 +489,63 @@ class CameraReader:
 
 
 # ---------------------------------------------------------------------------
+# Facial landmark drawing helper
+# ---------------------------------------------------------------------------
+
+def draw_face_landmarks(frame: np.ndarray, landmarks_px: Optional[np.ndarray]) -> None:
+    """Draw clear facial landmark dots and contours onto frame.
+    
+    Draws full face mesh points plus highlighted eyes, mouth, and nose landmarks.
+    """
+    if landmarks_px is None or len(landmarks_px) == 0:
+        return
+
+    n_pts = len(landmarks_px)
+
+    if n_pts >= 468:
+        # Full MediaPipe Face Mesh: base mesh dots in subtle emerald green
+        for pt in landmarks_px:
+            cv2.circle(frame, (int(pt[0]), int(pt[1])), 1, (0, 190, 100), -1)
+
+        # Left eye in bright cyan
+        left_eye_indices = [33, 160, 158, 133, 153, 144, 246, 161, 159, 157, 173, 155, 154, 145, 163, 7]
+        for idx in left_eye_indices:
+            if idx < n_pts:
+                cv2.circle(frame, (int(landmarks_px[idx][0]), int(landmarks_px[idx][1])), 2, (255, 255, 0), -1)
+
+        # Right eye in bright cyan
+        right_eye_indices = [362, 385, 387, 263, 373, 380, 466, 388, 386, 384, 398, 374, 381, 382, 390, 249]
+        for idx in right_eye_indices:
+            if idx < n_pts:
+                cv2.circle(frame, (int(landmarks_px[idx][0]), int(landmarks_px[idx][1])), 2, (255, 255, 0), -1)
+
+        # Lips / mouth in bright yellow
+        mouth_indices = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 78, 13, 81, 82, 312, 311]
+        for idx in mouth_indices:
+            if idx < n_pts:
+                cv2.circle(frame, (int(landmarks_px[idx][0]), int(landmarks_px[idx][1])), 2, (0, 255, 255), -1)
+
+        # Nose tip and bridge in orange
+        nose_indices = [1, 2, 98, 327, 168, 6, 197, 195, 5]
+        for idx in nose_indices:
+            if idx < n_pts:
+                cv2.circle(frame, (int(landmarks_px[idx][0]), int(landmarks_px[idx][1])), 2, (0, 165, 255), -1)
+
+    elif n_pts >= 68:
+        # Standard 68-point model (FacemarkLBF / dlib)
+        for pt in landmarks_px[0:17]:
+            cv2.circle(frame, (int(pt[0]), int(pt[1])), 1, (0, 190, 100), -1)
+        for pt in landmarks_px[17:27]:
+            cv2.circle(frame, (int(pt[0]), int(pt[1])), 2, (0, 255, 120), -1)
+        for pt in landmarks_px[27:36]:
+            cv2.circle(frame, (int(pt[0]), int(pt[1])), 2, (0, 165, 255), -1)
+        for pt in landmarks_px[36:48]:
+            cv2.circle(frame, (int(pt[0]), int(pt[1])), 2, (255, 255, 0), -1)
+        for pt in landmarks_px[48:68]:
+            cv2.circle(frame, (int(pt[0]), int(pt[1])), 2, (0, 255, 255), -1)
+
+
+# ---------------------------------------------------------------------------
 # Vision pipeline — to be called in vision thread loop
 # ---------------------------------------------------------------------------
 
@@ -384,10 +562,27 @@ def process_frame(
     ts = time.time()
     norm = detector.detect(bgr_frame)
     if norm is None or len(norm) < 68:
+        detector.last_landmarks_px = None
+        detector.last_bbox = None
         return FeatureRecord(timestamp=ts, frame_id=frame_id, face_found=False)
 
     h, w = bgr_frame.shape[:2]
     px = FaceMeshDetector.to_pixels(norm, w, h)
+    detector.last_landmarks_px = px
+
+    # Update bounding box if not already set by tracker
+    if detector.last_bbox is None or detector._backend != "facemark":
+        min_x = int(np.min(px[:, 0]))
+        max_x = int(np.max(px[:, 0]))
+        min_y = int(np.min(px[:, 1]))
+        max_y = int(np.max(px[:, 1]))
+        pad_w = int((max_x - min_x) * 0.12)
+        pad_h = int((max_y - min_y) * 0.12)
+        bx = max(0, min_x - pad_w)
+        by = max(0, min_y - pad_h)
+        bw = min(w - bx, (max_x - min_x) + 2 * pad_w)
+        bh = min(h - by, (max_y - min_y) + 2 * pad_h)
+        detector.last_bbox = (bx, by, bw, bh)
 
     ear_l, ear_r, ear_avg = compute_ear_avg(px)
     mar = compute_mar(px)
